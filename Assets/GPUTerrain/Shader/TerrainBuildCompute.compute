@@ -1,0 +1,171 @@
+#pragma kernel TraverseQuadTree
+#pragma kernel BuildLodMap
+#pragma kernel BuildPatches
+
+#pragma multi_compile_local __ _REVERSE_Z
+#pragma multi_compile_local __ ENABLE_FRUS_CULL
+#pragma multi_compile_local __ ENABLE_HIZ_CULL
+#pragma multi_compile_local __ BOUNDS_DEBUG
+#pragma multi_compile_local __ ENABLE_SEAM
+
+#include "./CommonInput.hlsl"
+
+
+Texture2D<float4> MinMaxHeightTexture;
+Texture2D<float4> _HeightMap;
+RWTexture2D<float4> _LodMap;
+
+ConsumeStructuredBuffer<uint2> ConsumeNodeList;
+AppendStructuredBuffer<uint2> AppendNodeList;
+AppendStructuredBuffer<uint3> AppendFinalNodeList;
+//四叉树遍历完成之后，将合适的节点存放在这里
+StructuredBuffer<uint3> FinalNodeList;
+
+//保存了Node的一些信息，通过NodeId来访问
+RWStructuredBuffer<NodeDescriptor> NodeDescriptors;
+
+//表示TraverseQuadTree Kernel执行的LOD级别
+uniform uint PassLOD;
+uniform float3 _CameraPositionWS;
+
+//包围盒再高度空间留出来的冗余空间，对应了MinMaxHeightTexture精度不够
+uniform int _BoundsHeightRedundance;
+
+uniform float4 _NodeEvaluationC; //节点评价系数，x为距离系数
+
+//***********世界尺寸参数***********
+//世界大小
+uniform float3 _WorldSize;
+
+/*
+//记录了每一个LOD级别的(nodeSize, patchExtent, nodeCount, SectorCountPerNode)
+
+其中：
+- nodeSize为node的边长(米)
+- patchExtent等于nodeSize / 16
+- nodeCount等于worldSize / nodeSize
+- sectorCountPerNode 等于2^LOD
+
+*/
+uniform float4 WorldLodParams[6];
+uniform uint NodeIDOffsetOfLOD[6];
+
+
+//**********裁剪相关变量****************
+uniform float4 _CameraFrustumPlanes[6];
+ConsumeStructuredBuffer<RenderPatch> PatchConsumeList;
+AppendStructuredBuffer<RenderPatch> CulledPatchList;
+
+
+float GetNodeSize(uint lod){
+    return WorldLodParams[lod].x;
+}
+
+float GetNodeCount(uint lod){
+    return WorldLodParams[lod].z;
+}
+
+float GetPatchExtent(uint lod){
+    return WorldLodParams[lod].y;
+}
+
+uint GetSectorCountPerNode(uint lod){
+    return (uint)WorldLodParams[lod].w;
+}
+
+
+uint GetNodeId(uint3 nodeLoc){
+    return NodeIDOffsetOfLOD[nodeLoc.z] + nodeLoc.y * GetNodeCount(nodeLoc.z) + nodeLoc.x;
+}
+
+
+uint GetNodeId(uint2 nodeLoc,uint mip){
+    return GetNodeId(uint3(nodeLoc,mip));
+}
+
+
+
+float2 GetNodePositionWS2(uint2 nodeLoc,uint mip){
+    float nodeMeterSize = GetNodeSize(mip);
+    float nodeCount = GetNodeCount(mip);
+    float2 nodePositionWS = ((float2)nodeLoc - (nodeCount - 1) * 0.5) * nodeMeterSize;
+    return nodePositionWS;
+}
+
+float3 GetNodePositionWS(uint2 nodeLoc,uint lod){
+    float2 nodePositionWS = GetNodePositionWS2(nodeLoc,lod);
+    float2 minMaxHeight = MinMaxHeightTexture.mips[lod + 3][nodeLoc].xy;
+    float y = (minMaxHeight.x + minMaxHeight.y) * 0.5 * _WorldSize.y;
+    return float3(nodePositionWS.x, y, nodePositionWS.y);
+}
+
+bool EvaluateNode(uint2 nodeLoc,uint lod){
+    float3 positionWS = GetNodePositionWS(nodeLoc, lod);
+    float dis = distance(_CameraPositionWS, positionWS);
+    float nodeSize = GetNodeSize(lod);
+    float f = dis / (nodeSize * _NodeEvaluationC.x);
+    if(f < 1){
+        return true;
+    }
+    return false;
+}
+
+//遍历四叉树，对节点进行评价，生成AppendFinalNodeList 和 NodeDescriptors
+[numthreads(1,1,1)]
+void TraverseQuadTree (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    uint2 nodeLoc = ConsumeNodeList.Consume();
+    uint nodeId = GetNodeId(nodeLoc, PassLOD);
+    NodeDescriptor desc = NodeDescriptors[nodeId];
+    if(PassLOD > 0 && EvaluateNode(nodeLoc, PassLOD)){
+        //divide
+        AppendNodeList.Append(nodeLoc * 2);
+        AppendNodeList.Append(nodeLoc * 2 + uint2(1, 0));
+        AppendNodeList.Append(nodeLoc * 2 + uint2(0, 1));
+        AppendNodeList.Append(nodeLoc * 2 + uint2(1, 1));
+        desc.branch = 1;
+    }else{
+        AppendFinalNodeList.Append(uint3(nodeLoc, PassLOD));
+        desc.branch = 0;
+    }
+    NodeDescriptors[nodeId] = desc;   
+}
+
+
+//*****LOD Map部分**********/
+
+[numthreads(8,8,1)]
+void BuildLodMap(uint3 id : SV_DispatchThreadID){
+
+}
+
+
+//*****PATCH部分**********
+
+
+RenderPatch CreatePatch(uint3 nodeLoc,uint2 patchOffset){
+    uint lod = nodeLoc.z;
+    float nodeMeterSize = GetNodeSize(lod);
+    float patchMeterSize = nodeMeterSize / PATCH_COUNT_PER_NODE;
+    float2 nodePositionWS = GetNodePositionWS2(nodeLoc.xy, lod);
+
+
+    RenderPatch patch;
+    patch.lod = lod;
+    patch.position = nodePositionWS + (patchOffset - (PATCH_COUNT_PER_NODE - 1) * 0.5) * patchMeterSize;
+
+    return patch;
+}
+
+[numthreads(8,8,1)]
+void BuildPatches(uint3 id : SV_DispatchThreadID,
+                  uint3 groupId : SV_GROUPID,
+                  uint3 groupThreadId : SV_GROUPTHREADID)
+{
+    uint3 nodeLoc = FinalNodeList[groupId.x];
+    uint2 patchOffset = groupThreadId.xy;
+    //生成patch
+    RenderPatch patch = CreatePatch(nodeLoc, patchOffset);
+    CulledPatchList.Append(patch);
+}
