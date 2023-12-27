@@ -29,10 +29,14 @@ namespace GPUTerrain {
         
         //最终分配的节点的信息
         private ComputeBuffer _finalNodeListBuffer;
+        //判断该节点是否被细分
         private ComputeBuffer _nodeDescriptors;
 
+
+        //经过剔除后真正需要被绘制的Buffer
         private ComputeBuffer _culledPatchBuffer;
         
+        //绘制patch的一些数据参数
         private ComputeBuffer _patchIndirectArgs;
         private ComputeBuffer _patchBoundsBuffer;
         private ComputeBuffer _patchBoundsIndirectArgs;
@@ -41,6 +45,7 @@ namespace GPUTerrain {
 
         private const int PatchStripSize = 9 * 4;
 
+        //评估节点的信息
         private Vector4 _nodeEvaluationC = new Vector4(1, 0, 0, 0);
         private bool _isNodeEvaluationCDirty = true;
 
@@ -52,8 +57,12 @@ namespace GPUTerrain {
         private Plane[] _cameraFrustumPlanes = new Plane[6];
         private Vector4[] _cameraFrustumPlanesV4 = new Vector4[6];
 
+        //细分四叉树的节点
         private int _kernelOfTraverseQuadTree;
+        //
         private int _kernelOfBuildLodMap;
+        
+        //生成真正的patch数据，传入的都是scetor(8*8 patch)
         private int _kernelOfBuildPatches;
 
 
@@ -160,6 +169,7 @@ namespace GPUTerrain {
         }
 
         private void InitMaxLODNodeListDatas() {
+            //生成最大的层级节点的数据 LOD5
             var maxLodNodeCount = TerrainAsset.MAX_LOD_NODE_COUNT;
             uint2[] datas = new uint2[maxLodNodeCount * maxLodNodeCount];
             var index = 0;
@@ -257,6 +267,7 @@ namespace GPUTerrain {
 
             this.UpdateCameraFrustumPlanes(camera);
 
+            //传入computeshaer一些数据
             if (_isNodeEvaluationCDirty) {
                 _isNodeEvaluationCDirty = false;
                 _commandBuffer.SetComputeVectorParam(_computeShader, ShaderConstants.NodeEvaluationC, _nodeEvaluationC);
@@ -269,6 +280,9 @@ namespace GPUTerrain {
             _commandBuffer.CopyCounterValue(_maxLODNodeList, _indirectArgsBuffer, 0);
 
 
+            //一个消费list，一个添加list
+            //输入消费list，判断里面的数据是否需要被划分，如果需要被划分，则将子节点数据添加到添加list中
+            //互换两个list数据，继续向更高层级迭代
             ComputeBuffer consumeNodeList = _nodeListA;
             ComputeBuffer appendNodeList = _nodeListB;
             for (var lod = TerrainAsset.MAX_LOD; lod >= 0; --lod) {
@@ -283,18 +297,24 @@ namespace GPUTerrain {
                 _commandBuffer.DispatchCompute(_computeShader, _kernelOfTraverseQuadTree, _indirectArgsBuffer, 0);
                 _commandBuffer.CopyCounterValue(appendNodeList, _indirectArgsBuffer, 0);
 
+
                 var temp = consumeNodeList;
                 consumeNodeList = appendNodeList;
                 appendNodeList = temp;
             }
 
+            //生成LOD Map
+            _commandBuffer.DispatchCompute(_computeShader, _kernelOfBuildLodMap, 20, 20, 1);
+
+
             //生成patch
             _commandBuffer.CopyCounterValue(_finalNodeListBuffer, _indirectArgsBuffer, 0);
             _commandBuffer.DispatchCompute(_computeShader, _kernelOfBuildPatches, _indirectArgsBuffer, 0);
+            //一定要将对应的参数拷贝一下
+            _commandBuffer.CopyCounterValue(_culledPatchBuffer, _patchIndirectArgs, 4);
 
             Graphics.ExecuteCommandBuffer(_commandBuffer);
         }
-
 
         public int boundsHeightRedundance
         {
