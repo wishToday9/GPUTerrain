@@ -21,7 +21,6 @@ float3 GetNormal(float3 v1, float3 v2){
 void CSMain (uint3 id : SV_DispatchThreadID)
 {
     // TODO: insert actual code here!
-
     uint2 coord = id.xy;
     float3 p0 = GetPosition(coord);
     float3 v1 = GetPosition(coord + uint2(1, 0)) - p0;
@@ -29,7 +28,7 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     float3 v3 = GetPosition(coord + uint2(-1, 0)) - p0;
     float3 v4 = GetPosition(coord + uint2(0, -1)) - p0;
 
-    float3 normal = GetNormal(v1,v2) + GetNormal(v2,v3) + GetNormal(v3,v4) + GetNormal(v4,v1);
+    float3 normal = GetNormal(v1, v2) + GetNormal(v2, v3) + GetNormal(v3, v4) + GetNormal(v4, v1);
     normal = normalize(normal);
     normal = (normal + 1) * 0.5;
     NormalTex[coord] = float4(normal.xzy,1);

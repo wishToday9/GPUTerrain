@@ -45,9 +45,7 @@ namespace GPUTerrain {
         public static void GenerateNormalMapFromHeightMap() {
             if (Selection.activeObject is Texture2D heightMap) {
                 GenerateNormalMapFromHeightMap(heightMap, (normalMap) =>
-                {
-
-                });
+                {  });
             }
             else
             {
