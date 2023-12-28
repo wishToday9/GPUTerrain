@@ -114,22 +114,21 @@ bool EvaluateNode(uint2 nodeLoc,uint lod){
 [numthreads(1,1,1)]
 void TraverseQuadTree (uint3 id : SV_DispatchThreadID)
 {
-    // TODO: insert actual code here!
     uint2 nodeLoc = ConsumeNodeList.Consume();
-    uint nodeId = GetNodeId(nodeLoc, PassLOD);
+    uint nodeId = GetNodeId(nodeLoc,PassLOD);
     NodeDescriptor desc = NodeDescriptors[nodeId];
-    if(PassLOD > 0 && EvaluateNode(nodeLoc, PassLOD)){
+    if(PassLOD > 0 && EvaluateNode(nodeLoc,PassLOD)){
         //divide
         AppendNodeList.Append(nodeLoc * 2);
-        AppendNodeList.Append(nodeLoc * 2 + uint2(1, 0));
-        AppendNodeList.Append(nodeLoc * 2 + uint2(0, 1));
-        AppendNodeList.Append(nodeLoc * 2 + uint2(1, 1));
+        AppendNodeList.Append(nodeLoc * 2 + uint2(1,0));
+        AppendNodeList.Append(nodeLoc * 2 + uint2(0,1));
+        AppendNodeList.Append(nodeLoc * 2 + uint2(1,1));
         desc.branch = 1;
     }else{
-        AppendFinalNodeList.Append(uint3(nodeLoc, PassLOD));
+        AppendFinalNodeList.Append(uint3(nodeLoc,PassLOD));
         desc.branch = 0;
     }
-    NodeDescriptors[nodeId] = desc;   
+    NodeDescriptors[nodeId] = desc;
 }
 
 
@@ -137,7 +136,19 @@ void TraverseQuadTree (uint3 id : SV_DispatchThreadID)
 
 [numthreads(8,8,1)]
 void BuildLodMap(uint3 id : SV_DispatchThreadID){
-
+    uint2 sectorLoc = id.xy;
+    [unroll]
+    for(uint lod = MAX_TERRAIN_LOD; lod >= 0; --lod){
+        uint scctorCount = GetSectorCountPerNode(lod);
+        uint2 nodeLoc = sectorLoc / scctorCount;
+        uint nodeId = GetNodeId(nodeLoc, lod);
+        NodeDescriptor desc = NodeDescriptors[nodeId];
+        if(desc.branch == 0){
+            _LodMap[sectorLoc] = lod * 1.0 / MAX_TERRAIN_LOD;
+            return;
+        }
+    }
+    _LodMap[sectorLoc] = 0;
 }
 
 

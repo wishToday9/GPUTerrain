@@ -44,6 +44,8 @@ Shader "GPUTerrain/Terrain"
 
             sampler2D _MainTex;
             float4 _MainTex_ST;
+            sampler2D _HeightMap;
+            uniform float3 _WorldSize;
 
             v2f vert (appdata v)
             {
@@ -55,6 +57,11 @@ Shader "GPUTerrain/Terrain"
                 float scale = pow(2,lod);
                 inVertex.xz *= scale;
                 inVertex.xz += patch.position;
+
+                float2 heightUV = (inVertex.xz + (_WorldSize.xz * 0.5) + 0.5) / (_WorldSize.xz + 1);
+                float height = tex2Dlod(_HeightMap,float4(heightUV,0,0)).r;
+                inVertex.y = height * _WorldSize.y;
+
                 o.vertex = TransformObjectToHClip(inVertex.xyz);
                 return o;
             }

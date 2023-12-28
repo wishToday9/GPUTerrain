@@ -63,6 +63,7 @@ namespace GPUTerrain{
                 _traverse.nodeEvalDistance = this.distanceEvaluation;
                 _traverse.hizDepthBias = this.hizDepthBias;
             }
+            _isTerrainMaterialDirty = true;
         }
 
         void UpdateTerrainMaterialProperties() {
