@@ -26,6 +26,7 @@ RWStructuredBuffer<NodeDescriptor> NodeDescriptors;
 
 //表示TraverseQuadTree Kernel执行的LOD级别
 uniform uint PassLOD;
+
 uniform float3 _CameraPositionWS;
 
 //包围盒再高度空间留出来的冗余空间，对应了MinMaxHeightTexture精度不够
@@ -36,6 +37,10 @@ uniform float4 _NodeEvaluationC; //节点评价系数，x为距离系数
 //***********世界尺寸参数***********
 //世界大小
 uniform float3 _WorldSize;
+
+//uniform uint NodeIDOffsetOfLOD[6];
+
+uint NodeIDOffsetOfLOD[6] = {8525,2125,525,125,25,0};
 
 /*
 //记录了每一个LOD级别的(nodeSize, patchExtent, nodeCount, SectorCountPerNode)
@@ -48,13 +53,18 @@ uniform float3 _WorldSize;
 
 */
 uniform float4 WorldLodParams[6];
-uniform uint NodeIDOffsetOfLOD[6];
+
+
 
 
 //**********裁剪相关变量****************
 uniform float4 _CameraFrustumPlanes[6];
 ConsumeStructuredBuffer<RenderPatch> PatchConsumeList;
 AppendStructuredBuffer<RenderPatch> CulledPatchList;
+
+#if BOUNDS_DEBUG
+AppendStructuredBuffer<BoundsDebug> PatchBoundsList;
+#endif
 
 
 float GetNodeSize(uint lod){
@@ -86,23 +96,33 @@ uint GetNodeId(uint2 nodeLoc,uint mip){
 
 
 float2 GetNodePositionWS2(uint2 nodeLoc,uint mip){
+    // 得到单位node的size
     float nodeMeterSize = GetNodeSize(mip);
+    // 得到node的数量
     float nodeCount = GetNodeCount(mip);
+    // 得到当前node的位置
     float2 nodePositionWS = ((float2)nodeLoc - (nodeCount - 1) * 0.5) * nodeMeterSize;
     return nodePositionWS;
 }
 
 float3 GetNodePositionWS(uint2 nodeLoc,uint lod){
+    // 得到当前node的xz坐标
     float2 nodePositionWS = GetNodePositionWS2(nodeLoc,lod);
+
+    // 计算当前node的高度平均值
     float2 minMaxHeight = MinMaxHeightTexture.mips[lod + 3][nodeLoc].xy;
     float y = (minMaxHeight.x + minMaxHeight.y) * 0.5 * _WorldSize.y;
     return float3(nodePositionWS.x, y, nodePositionWS.y);
 }
 
 bool EvaluateNode(uint2 nodeLoc,uint lod){
+    // 得到节点的世界位置
     float3 positionWS = GetNodePositionWS(nodeLoc, lod);
+    // 计算节点的位置和摄像机的位置的距离
     float dis = distance(_CameraPositionWS, positionWS);
+    // 一个node的size大小
     float nodeSize = GetNodeSize(lod);
+    //计算评估因子
     float f = dis / (nodeSize * _NodeEvaluationC.x);
     if(f < 1){
         return true;
@@ -114,20 +134,26 @@ bool EvaluateNode(uint2 nodeLoc,uint lod){
 [numthreads(1,1,1)]
 void TraverseQuadTree (uint3 id : SV_DispatchThreadID)
 {
+    // 取出来一个节点
     uint2 nodeLoc = ConsumeNodeList.Consume();
+    // 根据lod 和当前的位置，取出来当前的nodeID
     uint nodeId = GetNodeId(nodeLoc,PassLOD);
+    // 当前node的标识符
     NodeDescriptor desc = NodeDescriptors[nodeId];
+
     if(PassLOD > 0 && EvaluateNode(nodeLoc,PassLOD)){
-        //divide
+        //divide 将四个节点放入下一次的消费list
         AppendNodeList.Append(nodeLoc * 2);
         AppendNodeList.Append(nodeLoc * 2 + uint2(1,0));
         AppendNodeList.Append(nodeLoc * 2 + uint2(0,1));
         AppendNodeList.Append(nodeLoc * 2 + uint2(1,1));
         desc.branch = 1;
     }else{
+        //和摄像机位置足够远 没有必要往下划分
         AppendFinalNodeList.Append(uint3(nodeLoc,PassLOD));
         desc.branch = 0;
     }
+
     NodeDescriptors[nodeId] = desc;
 }
 
@@ -139,8 +165,11 @@ void BuildLodMap(uint3 id : SV_DispatchThreadID){
     uint2 sectorLoc = id.xy;
     [unroll]
     for(uint lod = MAX_TERRAIN_LOD; lod >= 0; --lod){
+        //一个node含有多个少sector
         uint scctorCount = GetSectorCountPerNode(lod);
+        //计算node的index
         uint2 nodeLoc = sectorLoc / scctorCount;
+        //得到对应的nodeId
         uint nodeId = GetNodeId(nodeLoc, lod);
         NodeDescriptor desc = NodeDescriptors[nodeId];
         if(desc.branch == 0){
@@ -161,13 +190,96 @@ RenderPatch CreatePatch(uint3 nodeLoc,uint2 patchOffset){
     float patchMeterSize = nodeMeterSize / PATCH_COUNT_PER_NODE;
     float2 nodePositionWS = GetNodePositionWS2(nodeLoc.xy, lod);
 
-
+    uint2 patchLoc = nodeLoc.xy * PATCH_COUNT_PER_NODE + patchOffset;
+   
+    //经过测试，当min和max相差比较小的时候，RG32似乎还是有精度问题？
+    float2 minMaxHeight = MinMaxHeightTexture.mips[lod][patchLoc].rg * _WorldSize.y + float2(-_BoundsHeightRedundance,_BoundsHeightRedundance);
+    
     RenderPatch patch;
     patch.lod = lod;
     patch.position = nodePositionWS + (patchOffset - (PATCH_COUNT_PER_NODE - 1) * 0.5) * patchMeterSize;
-
+    patch.minMaxHeight = minMaxHeight;
     return patch;
 }
+
+//得到patch的包围盒
+Bounds GetPatchBounds(RenderPatch patch){
+    float halfSize = GetPatchExtent(patch.lod);
+
+    Bounds bounds;
+    float3 boundsMin, boundsMax;
+
+    boundsMin.xz = patch.position - halfSize;
+    boundsMax.xz = patch.position + halfSize;
+    boundsMin.y = patch.minMaxHeight.x;
+    boundsMax.y = patch.minMaxHeight.y;
+
+    //包围盒 左下角
+    bounds.minPosition = boundsMin;
+    //包围盒 右上角
+    bounds.maxPosition = boundsMax;
+    
+    return bounds;
+}
+
+//********视锥裁剪(begin)*********
+
+//测试是否在平面的外侧
+bool IsOutSidePlane(float4 plane,float3 position){
+    return dot(plane.xyz,position) + plane.w < 0; 
+}
+
+bool IsAABBOutSidePlane(float4 plane,float3 boundsMin,float3 boundsMax){
+    return IsOutSidePlane(plane,boundsMin) &&
+    IsOutSidePlane(plane,boundsMax) &&
+    IsOutSidePlane(plane,float3(boundsMin.x,boundsMin.y,boundsMax.z)) &&
+    IsOutSidePlane(plane,float3(boundsMin.x,boundsMax.y,boundsMin.z)) &&
+    IsOutSidePlane(plane,float3(boundsMin.x,boundsMax.y,boundsMax.z)) &&
+    IsOutSidePlane(plane,float3(boundsMax.x,boundsMin.y,boundsMax.z)) &&
+    IsOutSidePlane(plane,float3(boundsMax.x,boundsMax.y,boundsMin.z)) &&
+    IsOutSidePlane(plane,float3(boundsMax.x,boundsMin.y,boundsMin.z));
+}
+
+//bounds是否在plane的外部
+bool IsBoundsOutSidePlane(float4 plane, Bounds bounds){
+    return IsAABBOutSidePlane(plane, bounds.minPosition, bounds.maxPosition);
+}
+
+//bounds在某一个平面的外部就可以剔除掉
+bool FrustumCull(float4 planes[6], Bounds bounds){
+    return IsBoundsOutSidePlane(planes[0], bounds) ||
+    IsBoundsOutSidePlane(planes[1], bounds) ||
+    IsBoundsOutSidePlane(planes[2], bounds) ||
+    IsBoundsOutSidePlane(planes[3], bounds) ||
+    IsBoundsOutSidePlane(planes[4], bounds) ||
+    IsBoundsOutSidePlane(planes[5], bounds) ;
+}
+
+bool Cull(Bounds bounds){
+    #if ENABLE_FRUS_CULL
+    if(FrustumCull(_CameraFrustumPlanes, bounds)){
+        return true;
+    }
+    #endif
+
+    #if ENABLE_HIZ_CULL
+    if(HizOcclusionCull(_CameraFrustumPlanes, bounds)){
+        return true;
+    }
+    #endif
+
+    return false;
+}
+//********视锥裁剪(end)*************
+
+
+//********遮挡剔除Hiz(begin)*************
+
+
+
+//********遮挡剔除Hiz(end)*************
+
+
 
 [numthreads(8,8,1)]
 void BuildPatches(uint3 id : SV_DispatchThreadID,
@@ -178,5 +290,22 @@ void BuildPatches(uint3 id : SV_DispatchThreadID,
     uint2 patchOffset = groupThreadId.xy;
     //生成patch
     RenderPatch patch = CreatePatch(nodeLoc, patchOffset);
+    
+    //裁剪
+    Bounds bounds = GetPatchBounds(patch);
+    if(Cull(bounds)){
+        return;
+    }
+
+
     CulledPatchList.Append(patch);
+
+
+    #if BOUNDS_DEBUG
+    BoundsDebug boundsDebug;
+    boundsDebug.bounds = bounds;
+    boundsDebug.color = float4((bounds.minPosition + _WorldSize * 0.5) / _WorldSize,1);
+    PatchBoundsList.Append(boundsDebug);
+
+    #endif
 }

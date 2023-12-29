@@ -41,6 +41,17 @@ namespace GPUTerrain {
             AssetDatabase.Refresh();
         }
 
+
+        [MenuItem("Assets/Create/GPUTerrain/CreateUnitCubeMesh")]
+        public static void CreateUnitCubeMeshAsset()
+        {
+            var mesh = MeshUtility.CreateCube(1);
+            string path = GetSelectedDir();
+            path += "/Cube.mesh";
+            AssetDatabase.CreateAsset(mesh, path);
+            AssetDatabase.Refresh();
+        }
+
         [MenuItem("Assets/Create/GPUTerrain/GenerateNormalMapFromHeightMap")]
         public static void GenerateNormalMapFromHeightMap() {
             if (Selection.activeObject is Texture2D heightMap) {

@@ -28,7 +28,7 @@ struct NodeDescriptor{
 
 struct RenderPatch{
 	float2 position;
-	//float2 minMaxHeight;
+	float2 minMaxHeight;
 	uint lod;
 	//uint4 lodTrans;
 };

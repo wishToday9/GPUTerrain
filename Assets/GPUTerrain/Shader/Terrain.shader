@@ -6,7 +6,7 @@ Shader "GPUTerrain/Terrain"
     }
     SubShader
     {
-        Tags { "RenderType"="Opaque" }
+        Tags { "RenderType"="Opaque" "LightMode" = "UniversalForward"}
         LOD 100
 
         Pass

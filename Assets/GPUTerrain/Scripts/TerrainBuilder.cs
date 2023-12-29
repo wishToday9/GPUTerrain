@@ -38,8 +38,11 @@ namespace GPUTerrain {
         
         //绘制patch的一些数据参数
         private ComputeBuffer _patchIndirectArgs;
+
+        //patch 包围盒缓冲区
         private ComputeBuffer _patchBoundsBuffer;
         private ComputeBuffer _patchBoundsIndirectArgs;
+
         private ComputeBuffer _indirectArgsBuffer;
         private RenderTexture _lodMap;
 
@@ -59,7 +62,7 @@ namespace GPUTerrain {
 
         //细分四叉树的节点
         private int _kernelOfTraverseQuadTree;
-        //
+        //生成LODmap信息
         private int _kernelOfBuildLodMap;
         
         //生成真正的patch数据，传入的都是scetor(8*8 patch)
@@ -108,8 +111,8 @@ namespace GPUTerrain {
             this.InitWorldParams();
 
 
-            //this.boundsHeightRedundance = 5;
-            //this.hizDepthBias = 1;
+            this.boundsHeightRedundance = 5;
+            this.hizDepthBias = 1;
         }
 
         void InitWorldParams() {
@@ -117,10 +120,13 @@ namespace GPUTerrain {
             int nodeCount = TerrainAsset.MAX_LOD_NODE_COUNT;
             Vector4[] worldLODParams = new Vector4[TerrainAsset.MAX_LOD + 1];
             for (var lod = TerrainAsset.MAX_LOD; lod >= 0; --lod) {
+                //lod node 大小
                 var nodeSize = wSize / nodeCount;
                 var patchExtent = nodeSize / 16;
+                //sector是8*8的patch， LOD0 一个node是一个sector
                 var setctorCountPerNode = (int)Mathf.Pow(2, lod);
                 worldLODParams[lod] = new Vector4(nodeSize, patchExtent, nodeCount, setctorCountPerNode);
+                //lod node 数量  lod5 => 5     lod4 => 10
                 nodeCount *= 2;
             }
             _computeShader.SetVectorArray(ShaderConstants.WorldLodParams, worldLODParams);
@@ -133,7 +139,7 @@ namespace GPUTerrain {
                 nodeIDOffsetLOD[lod * 4] = nodeIdOffset;
                 nodeIdOffset += (int)(worldLODParams[lod].z * worldLODParams[lod].z);
             }
-            _computeShader.SetInts("NodeIDOffsetOfLOD", nodeIDOffsetLOD);
+            //_computeShader.SetInts("NodeIDOffsetOfLOD", nodeIDOffsetLOD);
         }
 
         void InitKernels() {
@@ -312,6 +318,11 @@ namespace GPUTerrain {
             _commandBuffer.DispatchCompute(_computeShader, _kernelOfBuildPatches, _indirectArgsBuffer, 0);
             //一定要将对应的参数拷贝一下
             _commandBuffer.CopyCounterValue(_culledPatchBuffer, _patchIndirectArgs, 4);
+
+
+            if (isBoundsBufferOn) {
+                _commandBuffer.CopyCounterValue(_patchBoundsBuffer, _patchBoundsIndirectArgs, 4);
+            }
 
             Graphics.ExecuteCommandBuffer(_commandBuffer);
         }
